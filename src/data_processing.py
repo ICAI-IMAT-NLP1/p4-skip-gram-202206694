@@ -23,9 +23,10 @@ def load_and_preprocess_data(infile: str) -> List[str]:
 
     # Preprocess and tokenize the text
     # TODO
-    tokens: List[str] = None
+    tokens: List[str] = tokenize(text)
 
     return tokens
+
 
 def create_lookup_tables(words: List[str]) -> Tuple[Dict[str, int], Dict[int, str]]:
     """
@@ -39,44 +40,47 @@ def create_lookup_tables(words: List[str]) -> Tuple[Dict[str, int], Dict[int, st
         and the second maps integers to words (int_to_vocab).
     """
     # TODO
-    word_counts: Counter = None
+    word_counts: Counter = Counter(words)
+
     # Sorting the words from most to least frequent in text occurrence.
-    sorted_vocab: List[int] = None
-    
+    sorted_vocab: List[str] = [word for word, _ in word_counts.most_common()]
+
     # Create int_to_vocab and vocab_to_int dictionaries.
-    int_to_vocab: Dict[int, str] = None
-    vocab_to_int: Dict[str, int] = None
+    int_to_vocab: Dict[int, str] = {i: word for i, word in enumerate(sorted_vocab)}
+    vocab_to_int: Dict[str, int] = {word: i for i, word in int_to_vocab.items()}
 
     return vocab_to_int, int_to_vocab
 
 
 def subsample_words(words: List[str], vocab_to_int: Dict[str, int], threshold: float = 1e-5) -> Tuple[List[int], Dict[str, float]]:
     """
-    Perform subsampling on a list of word integers using PyTorch, aiming to reduce the 
-    presence of frequent words according to Mikolov's subsampling technique. This method 
-    calculates the probability of keeping each word in the dataset based on its frequency, 
-    with more frequent words having a higher chance of being discarded. The process helps 
-    in balancing the word distribution, potentially leading to faster training and better 
-    representations by focusing more on less frequent words.
-    
-    Args:
-        words (list): List of words to be subsampled.
-        vocab_to_int (dict): Dictionary mapping words to unique integers.
-        threshold (float): Threshold parameter controlling the extent of subsampling.
-
-        
-    Returns:
-        List[int]: A list of integers representing the subsampled words, where some high-frequency words may be removed.
-        Dict[str, float]: Dictionary associating each word with its frequency.
+    Perform subsampling on a list of word integers using PyTorch, reducing 
+    the presence of frequent words according to Mikolov's subsampling technique.
     """
-    # TODO
-    # Convert words to integers
-    int_words: List[int] = None
-    
-    freqs: Dict[str, float] = None
-    train_words: List[str] = None
 
-    return train_words, freqs
+    print("Converting words to integers...")
+    int_words = torch.tensor([vocab_to_int[word] for word in words], dtype=torch.long)
+
+    print("Calculating frequencies...")
+    total_count = len(int_words)
+    word_counts = torch.bincount(int_words, minlength=len(vocab_to_int))
+
+    # Convert to probability distribution
+    freqs = word_counts.float() / total_count
+
+    # Compute subsampling probability (avoid division by zero)
+    probs = 1 - torch.sqrt(threshold / (freqs + 1e-10))
+
+    print("Applying subsampling...")
+    keep_prob = torch.rand(len(int_words))
+    train_words = int_words[keep_prob > probs[int_words]]
+
+    print(f"Subsampled words: {len(train_words)}")
+    return train_words.tolist(), {word: freqs[i].item() for word, i in vocab_to_int.items()}
+
+
+
+
 
 def get_target(words: List[str], idx: int, window_size: int = 5) -> List[str]:
     """
@@ -91,11 +95,20 @@ def get_target(words: List[str], idx: int, window_size: int = 5) -> List[str]:
         List[str]: A list of words selected randomly within the window around the target word.
     """
     # TODO
-    target_words: List[str] = None
+    target_words: List[str] = []
+
+    R = torch.randint(1, window_size + 1, (1,)).item()
+    start = max(0, idx - R)
+    end = min(len(words), idx + R + 1)
+
+    for i in range(start, end):
+        if i != idx:
+            target_words.append(words[i])
 
     return target_words
 
-def get_batches(words: List[int], batch_size: int, window_size: int = 5) -> Generator[Tuple[List[int], List[int]]]:
+
+def get_batches(words: List[int], batch_size: int, window_size: int = 5) -> Generator[Tuple[List[int], List[int]], None, None]:
     """Generate batches of word pairs for training.
 
     This function creates a generator that yields tuples of (inputs, targets),
@@ -113,11 +126,18 @@ def get_batches(words: List[int], batch_size: int, window_size: int = 5) -> Gene
         - The first list contains input words (repeated for each of their context words).
         - The second list contains the corresponding target context words.
     """
-
     # TODO
     for idx in range(0, len(words), batch_size):
-        inputs, targets: Tuple[List[int], List[int]] = None, None
+        inputs, targets = [], []
+        batch = words[idx:idx + batch_size]
+
+        for i in range(len(batch)):
+            target_context = get_target(batch, i, window_size)
+            inputs.extend([batch[i]] * len(target_context))
+            targets.extend(target_context)
+
         yield inputs, targets
+
 
 def cosine_similarity(embedding: torch.nn.Embedding, valid_size: int = 16, valid_window: int = 100, device: str = 'cpu'):
     """Calculates the cosine similarity of validation words with words in the embedding matrix.
@@ -139,9 +159,16 @@ def cosine_similarity(embedding: torch.nn.Embedding, valid_size: int = 16, valid
     Note:
         sim = (a . b) / |a||b| where `a` and `b` are embedding vectors.
     """
-
     # TODO
-    valid_examples: torch.Tensor = None
-    similarities: torch.Tensor = None
+    valid_examples: torch.Tensor = torch.cat(
+        (torch.randint(0, valid_window, (valid_size // 2,)),
+         torch.randint(valid_window, valid_window * 2, (valid_size // 2,)))
+    ).to(device)
+
+    embed_vectors = embedding.weight
+    embed_norm = embed_vectors / embed_vectors.norm(dim=1, keepdim=True)
+
+    valid_vectors = embed_vectors[valid_examples]
+    similarities: torch.Tensor = torch.mm(valid_vectors, embed_norm.t())
 
     return valid_examples, similarities
